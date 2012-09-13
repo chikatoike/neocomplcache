@@ -27,14 +27,20 @@
 let s:save_cpo = &cpo
 set cpo&vim
 
-function! s:main(argv)"{{{
+function! s:main(is_async, argv)"{{{
   " args: funcname, outputname filename pattern_file_name mark minlen maxfilename
   let [funcname, outputname, filename, pattern_file_name, mark, minlen, maxfilename, fileencoding]
         \ = a:argv
 
   if funcname ==# 'load_from_file'
-    let keyword_list = s:load_from_file(
-          \ filename, pattern_file_name, mark, minlen, maxfilename, fileencoding)
+    if a:is_async
+      call s:load_from_file2(
+            \ filename, pattern_file_name, mark, minlen, maxfilename, fileencoding, outputname)
+      return
+    else
+      let keyword_list = s:load_from_file(
+            \ filename, pattern_file_name, mark, minlen, maxfilename, fileencoding)
+    endif
   else
     let keyword_list = s:load_from_tags(
           \ filename, pattern_file_name, mark, minlen, maxfilename, fileencoding)
@@ -63,6 +69,69 @@ function! s:main(argv)"{{{
   "       \ v:val.word, v:val.abbr, v:val.menu, v:val.kind)"),
   "       \ outputname)
   call writefile([string(keyword_list)], outputname)
+endfunction"}}}
+
+function! s:load_from_file2(filename, pattern_file_name, mark, minlen, maxfilename, fileencoding, outputname)"{{{
+  if !filereadable(a:filename)
+    " File not found.
+    return
+  endif
+
+  let pattern = get(readfile(a:pattern_file_name), 0, '\h\w*')
+
+  let menu = '[' . a:mark . '] ' . s:strwidthpart(
+        \ fnamemodify(a:filename, ':t'), a:maxfilename)
+
+  let keyword_pattern2 = '\%('.pattern.'\m\)\@!.'
+
+  let old_undolevel = &undolevels
+  let old_eventignore = &eventignore
+  set undolevels=-1
+  set eventignore=all
+
+  try
+    " Create empty buffer.
+    new
+    setlocal buftype=nofile
+    setlocal bufhidden=wipe
+    setlocal noundofile
+
+    execute 'read ++encoding=' . a:fileencoding .  ' `=a:filename`'
+
+    " Make a keyword per one line.
+    let @/ = keyword_pattern2
+    %substitute//\r/ge
+
+    " Remove short word line.
+    execute 'global!/.\{' . a:minlen . ',}/delete'
+
+    " Unique
+    sort u
+
+    if getline(1) ==# ''
+      " There are no keywords.
+      return
+    endif
+
+    " Make VimSon.
+
+    " Escape single quote.
+    %substitute/'/''/ge
+
+    " Make dictionary literal.
+    execute "%substitute/.*/{'word':'\\0','abbr':'\\0','menu':'" . menu . "','kind':''},/ge"
+
+    " Make array literal.
+    call append(0, '[')
+    call append('$', ']')
+    %join!
+
+    write `=a:outputname`
+    bwipeout!
+  finally
+    let &undolevels = old_undolevel
+    let &eventignore = old_eventignore
+  endtry
 endfunction"}}}
 
 function! s:load_from_file(filename, pattern_file_name, mark, minlen, maxfilename, fileencoding)"{{{
@@ -318,7 +387,7 @@ endif
 if argc() == 8 &&
       \ (argv(0) ==# 'load_from_file' || argv(0) ==# 'load_from_tags')
   try
-    call s:main(argv())
+    call s:main(1, argv())
   catch
     call writefile([v:throwpoint, v:exception],
           \     expand('~/async_error_log'))
@@ -327,7 +396,7 @@ if argc() == 8 &&
   qall!
 else
   function! neocomplcache#async_cache#main(argv)"{{{
-    call s:main(a:argv)
+    call s:main(0, a:argv)
   endfunction"}}}
 endif
 
